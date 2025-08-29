@@ -6,6 +6,8 @@ use lightning::{
 };
 use tonic_lnd::tonic::Status;
 
+use crate::lndkrpc::{LndkError, LndkErrorCode};
+
 mod client_impls;
 pub mod handler;
 mod lnd_requests;
@@ -84,3 +86,75 @@ impl Display for OfferError {
 }
 
 impl Error for OfferError {}
+
+impl OfferError {
+    pub fn to_error_code(&self) -> LndkErrorCode {
+        match self {
+            OfferError::AlreadyProcessing(_) => LndkErrorCode::AlreadyProcessing,
+            OfferError::BuildUIRFailure(_) => LndkErrorCode::BuildInvoiceRequestFailed,
+            OfferError::SignError(_) => LndkErrorCode::SignFailed,
+            OfferError::DeriveKeyFailure(_) => LndkErrorCode::DeriveKeyFailed,
+            OfferError::InvalidAmount(_) => LndkErrorCode::InvalidAmount,
+            OfferError::InvalidCurrency => LndkErrorCode::InvalidCurrency,
+            OfferError::PeerConnectError(_) => LndkErrorCode::PeerConnectionFailed,
+            OfferError::NodeAddressNotFound => LndkErrorCode::NodeAddressNotFound,
+            OfferError::ListPeersFailure(_) => LndkErrorCode::ListPeersFailed,
+            OfferError::BuildBlindedPathFailure => LndkErrorCode::BlindedPathBuildFailed,
+            OfferError::RouteFailure(_) => LndkErrorCode::RouteFailed,
+            OfferError::TrackFailure(_) => LndkErrorCode::TrackPaymentFailed,
+            OfferError::PaymentFailure => LndkErrorCode::PaymentFailed,
+            OfferError::InvoiceTimeout(_) => LndkErrorCode::InvoiceTimeout,
+            OfferError::IntroductionNodeNotFound => LndkErrorCode::IntroductionNodeNotFound,
+            OfferError::GetChannelInfo(_) => LndkErrorCode::ChannelInfoFailed,
+        }
+    }
+
+    pub fn get_details(&self) -> Option<String> {
+        match self {
+            OfferError::AlreadyProcessing(id) => Some(format!("payment_id: {}", id)),
+            OfferError::BuildUIRFailure(e) => Some(format!("semantic_error: {e:?}")),
+            OfferError::SignError(e) => Some(format!("sign_error: {e:?}")),
+            OfferError::DeriveKeyFailure(e) => Some(format!("status_code: {}", e.code())),
+            OfferError::InvalidAmount(e) => Some(e.clone()),
+            OfferError::PeerConnectError(e) => Some(format!("status_code: {}", e.code())),
+            OfferError::ListPeersFailure(e) => Some(format!("status_code: {}", e.code())),
+            OfferError::RouteFailure(e) => Some(format!("status_code: {}", e.code())),
+            OfferError::TrackFailure(e) => Some(format!("status_code: {}", e.code())),
+            OfferError::InvoiceTimeout(timeout) => Some(format!("timeout_seconds: {}", timeout)),
+            OfferError::GetChannelInfo(e) => Some(format!("status_code: {}", e.code())),
+            _ => None,
+        }
+    }
+
+    pub fn to_lndk_error(&self) -> LndkError {
+        LndkError {
+            code: self.to_error_code() as i32,
+            message: self.to_string(),
+            details: self.get_details(),
+        }
+    }
+
+    pub fn to_grpc_status_code(&self) -> tonic_lnd::tonic::Code {
+        match self {
+            OfferError::InvalidAmount(_)
+            | OfferError::InvalidCurrency
+            | OfferError::AlreadyProcessing(_) => tonic_lnd::tonic::Code::InvalidArgument,
+
+            OfferError::PeerConnectError(_)
+            | OfferError::NodeAddressNotFound
+            | OfferError::ListPeersFailure(_) => tonic_lnd::tonic::Code::Unavailable,
+
+            OfferError::RouteFailure(_)
+            | OfferError::PaymentFailure
+            | OfferError::IntroductionNodeNotFound => tonic_lnd::tonic::Code::FailedPrecondition,
+
+            OfferError::InvoiceTimeout(_) => tonic_lnd::tonic::Code::DeadlineExceeded,
+
+            _ => tonic_lnd::tonic::Code::Internal,
+        }
+    }
+
+    pub fn to_status(&self) -> Status {
+        Status::new(self.to_grpc_status_code(), self.to_string())
+    }
+}

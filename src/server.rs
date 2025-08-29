@@ -13,9 +13,10 @@ use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
 use lndkrpc::offers_server::Offers;
 use lndkrpc::{
-    Bolt12InvoiceContents, DecodeInvoiceRequest, FeatureBit, GetInvoiceRequest, GetInvoiceResponse,
-    PayInvoiceRequest, PayInvoiceResponse, PayOfferRequest, PayOfferResponse, PaymentHash,
-    PaymentPaths,
+    Bolt12InvoiceContents, DecodeInvoiceRequest, DecodeInvoiceResponse, FeatureBit,
+    GetInvoiceRequest, GetInvoiceResponse, GetInvoiceSuccess, LndkError, PayInvoiceRequest,
+    PayInvoiceResponse, PayInvoiceSuccess, PayOfferRequest, PayOfferResponse, PayOfferSuccess,
+    PaymentHash, PaymentPaths,
 };
 use rcgen::{generate_simple_self_signed, CertifiedKey, Error as RcgenError};
 use std::error::Error;
@@ -111,41 +112,52 @@ impl Offers for LNDKServer {
             fee_limit,
         };
 
-        let payment = match self.offer_handler.pay_offer(cfg).await {
+        let response = match self.offer_handler.pay_offer(cfg).await {
             Ok(payment) => {
                 log::info!("Payment succeeded.");
-                payment
+                PayOfferResponse {
+                    payment_preimage: payment.payment_preimage.clone(),
+                    result: Some(lndkrpc::pay_offer_response::Result::Success(
+                        PayOfferSuccess {
+                            payment_preimage: payment.payment_preimage,
+                        },
+                    )),
+                }
             }
-            Err(e) => match e {
-                OfferError::InvalidAmount(e) => {
-                    return Err(Status::invalid_argument(e.to_string()))
-                }
-                OfferError::InvalidCurrency => {
-                    return Err(Status::invalid_argument(format!("{e}")))
-                }
-                _ => return Err(Status::internal(format!("Internal error: {e}"))),
+            Err(e) => PayOfferResponse {
+                payment_preimage: String::new(),
+                result: Some(lndkrpc::pay_offer_response::Result::Error(
+                    e.to_lndk_error(),
+                )),
             },
         };
 
-        let reply = PayOfferResponse {
-            payment_preimage: payment.payment_preimage,
-        };
-
-        Ok(Response::new(reply))
+        Ok(Response::new(response))
     }
 
     async fn decode_invoice(
         &self,
         request: Request<DecodeInvoiceRequest>,
-    ) -> Result<Response<Bolt12InvoiceContents>, Status> {
+    ) -> Result<Response<DecodeInvoiceResponse>, Status> {
         log::info!("Received a request: {:?}", request.get_ref());
 
         let invoice_string: Bolt12InvoiceString = request.get_ref().invoice.clone().into();
-        let invoice = Bolt12Invoice::try_from(invoice_string)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let response = match Bolt12Invoice::try_from(invoice_string) {
+            Ok(invoice) => DecodeInvoiceResponse {
+                result: Some(lndkrpc::decode_invoice_response::Result::Success(
+                    generate_bolt12_invoice_contents(&invoice),
+                )),
+            },
+            Err(e) => DecodeInvoiceResponse {
+                result: Some(lndkrpc::decode_invoice_response::Result::Error(LndkError {
+                    code: lndkrpc::LndkErrorCode::InvalidInvoice as i32,
+                    message: format!("Invalid invoice: {}", e),
+                    details: Some(format!("parse_error: {e:?}")),
+                })),
+            },
+        };
 
-        let reply: Bolt12InvoiceContents = generate_bolt12_invoice_contents(&invoice);
-        Ok(Response::new(reply))
+        Ok(Response::new(response))
     }
 
     async fn get_invoice(
@@ -216,18 +228,25 @@ impl Offers for LNDKServer {
         };
 
         // We need to remove the payment from our tracking map now.
-        // TODO: This is a hack to remove the payment from the tracking map. We should do it when
-        // get_invoice params option or other way.
-        {
-            self.offer_handler.remove_active_payment(payment_id);
-        }
+        // TODO: This is a hack to remove the payment from the tracking map. We should do it
+        // when get_invoice params option or other way.
+        self.offer_handler.remove_active_payment(payment_id);
 
-        let reply: GetInvoiceResponse = GetInvoiceResponse {
-            invoice_hex_str: encode_invoice_as_hex(&invoice)?,
-            invoice_contents: Some(generate_bolt12_invoice_contents(&invoice)),
+        let invoice_hex_str = encode_invoice_as_hex(&invoice)?;
+        let invoice_contents = generate_bolt12_invoice_contents(&invoice);
+
+        let response = GetInvoiceResponse {
+            invoice_hex_str: invoice_hex_str.clone(),
+            invoice_contents: Some(invoice_contents.clone()),
+            result: Some(lndkrpc::get_invoice_response::Result::Success(
+                GetInvoiceSuccess {
+                    invoice_hex_str,
+                    invoice_contents: Some(invoice_contents),
+                },
+            )),
         };
 
-        Ok(Response::new(reply))
+        Ok(Response::new(response))
     }
 
     async fn pay_invoice(
@@ -263,23 +282,31 @@ impl Offers for LNDKServer {
 
         let fee_limit = create_fee_limit(inner_request.fee_limit, inner_request.fee_limit_percent);
 
-        let invoice = match self
+        let response = match self
             .offer_handler
             .pay_invoice(client, amount, &invoice, payment_id, fee_limit)
             .await
         {
-            Ok(invoice) => {
+            Ok(payment) => {
                 log::info!("Invoice paid.");
-                invoice
+                PayInvoiceResponse {
+                    payment_preimage: payment.payment_preimage.clone(),
+                    result: Some(lndkrpc::pay_invoice_response::Result::Success(
+                        PayInvoiceSuccess {
+                            payment_preimage: payment.payment_preimage,
+                        },
+                    )),
+                }
             }
-            Err(e) => return Err(Status::internal(format!("Error paying invoice: {e}"))),
+            Err(e) => PayInvoiceResponse {
+                payment_preimage: String::new(),
+                result: Some(lndkrpc::pay_invoice_response::Result::Error(
+                    e.to_lndk_error(),
+                )),
+            },
         };
 
-        let reply = PayInvoiceResponse {
-            payment_preimage: invoice.payment_preimage,
-        };
-
-        Ok(Response::new(reply))
+        Ok(Response::new(response))
     }
 }
 
