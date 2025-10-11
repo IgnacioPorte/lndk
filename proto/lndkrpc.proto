@@ -18,6 +18,7 @@ message PayOfferRequest {
    optional uint32 response_invoice_timeout = 4;
    optional uint32 fee_limit = 5;
    optional uint32 fee_limit_percent = 6;
+   optional string name  = 7; 
 }
 
 message PayOfferResponse {

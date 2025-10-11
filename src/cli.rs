@@ -143,6 +143,10 @@ enum Commands {
         /// Mutually exclusive with fee_limit - only one can be set.
         #[arg(long, required = false, conflicts_with = "fee_limit")]
         fee_limit_percent: Option<u32>,
+
+        /// The human readable name of the user to pay.
+        #[arg(required = false)]
+        name: Option<String>,
     },
     /// GetInvoice fetch a BOLT 12 invoice, which will be returned as a hex-encoded string. It
     /// fetches the invoice from a BOLT 12 offer, provided as a 'lno'-prefaced offer string.
@@ -231,6 +235,7 @@ async fn main() {
             response_invoice_timeout,
             fee_limit,
             fee_limit_percent,
+            name,
         } => {
             let tls = read_cert_from_args_or_exit(args.cert_pem, args.cert_path);
             let channel = create_grpc_channel(args.grpc_host, args.grpc_port, tls).await;
@@ -253,6 +258,7 @@ async fn main() {
                 response_invoice_timeout,
                 fee_limit,
                 fee_limit_percent,
+                name,
             });
             add_metadata(&mut request, macaroon);
 

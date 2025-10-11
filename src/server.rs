@@ -1,3 +1,4 @@
+use crate::dns_resolver::LndkDNSResolverMessageHandler;
 use crate::lnd::{get_lnd_client, get_network, Creds, LndCfg, LndError};
 use crate::lndkrpc::{CreateOfferRequest, CreateOfferResponse};
 use crate::offers::get_destination;
@@ -36,6 +37,7 @@ pub struct LNDKServer {
     // The LND tls cert we need to establish a connection with LND.
     lnd_cert: String,
     address: String,
+    dns_resolver: LndkDNSResolverMessageHandler,
 }
 
 impl LNDKServer {
@@ -44,12 +46,14 @@ impl LNDKServer {
         node_id: &str,
         lnd_cert: String,
         address: String,
+        dns_resolver: LndkDNSResolverMessageHandler,
     ) -> Self {
         Self {
             offer_handler,
             node_id: PublicKey::from_str(node_id).unwrap(),
             lnd_cert,
             address,
+            dns_resolver,
         }
     }
 }
@@ -72,7 +76,24 @@ impl Offers for LNDKServer {
         let mut client = get_lnd_client(lnd_cfg)?;
 
         let inner_request = request.get_ref();
-        let offer = decode(inner_request.offer.clone())?;
+
+        let offer_str = if let Some(name_str) = &inner_request.name {
+            if !name_str.is_empty() {
+                self.dns_resolver
+                    .resolve_name_to_offer(name_str)
+                    .await
+                    .map_err(|e| {
+                        log::error!("DNS resolution failed: {}", e);
+                        Status::internal(format!("DNS resolution failed: {}", e))
+                    })?
+            } else {
+                inner_request.offer.clone()
+            }
+        } else {
+            inner_request.offer.clone()
+        };
+
+        let offer = decode(offer_str)?;
 
         let destination = get_destination(&offer).await?;
         let reply_path = None;
