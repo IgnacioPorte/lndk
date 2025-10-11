@@ -1,35 +1,35 @@
+use crate::OfferError;
 use bitcoin_payment_instructions::hrn_resolution::{HrnResolution, HrnResolver, HumanReadableName};
 use bitcoin_payment_instructions::http_resolver::HTTPHrnResolver;
-use lightning::onion_message::dns_resolution::OMNameResolver;
+use std::sync::Arc;
 
 pub struct LndkDNSResolverMessageHandler {
-    om_resolver: OMNameResolver,
+    resolver: Arc<dyn HrnResolver + Send + Sync>,
+}
+
+impl Default for LndkDNSResolverMessageHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LndkDNSResolverMessageHandler {
-    pub fn new(latest_block_time: u32, latest_block_height: u32) -> Self {
+    pub fn new() -> Self {
+        Self::with_resolver(HTTPHrnResolver::new())
+    }
+
+    pub fn with_resolver<R: HrnResolver + Send + Sync + 'static>(resolver: R) -> Self {
         Self {
-            om_resolver: OMNameResolver::new(latest_block_time, latest_block_height),
+            resolver: Arc::new(resolver),
         }
     }
 
-    pub fn resolver(&self) -> &OMNameResolver {
-        &self.om_resolver
-    }
-
-    pub async fn resolve_name_to_offer(
-        &self,
-        name_str: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn resolve_name_to_offer(&self, name_str: &str) -> Result<String, OfferError> {
         let resolved_uri = self.resolve_locally(name_str.to_string()).await?;
-
-        self.extract_offer_from_uri(&resolved_uri).map_err(|e| {
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-                as Box<dyn std::error::Error + Send + Sync>
-        })
+        self.extract_offer_from_uri(&resolved_uri)
     }
 
-    pub fn extract_offer_from_uri(&self, uri: &str) -> Result<String, String> {
+    pub fn extract_offer_from_uri(&self, uri: &str) -> Result<String, OfferError> {
         if let Some((_scheme, params)) = uri.split_once("?") {
             for param in params.split("&") {
                 if let Some((key, value)) = param.split_once("=") {
@@ -38,41 +38,33 @@ impl LndkDNSResolverMessageHandler {
                     }
                 }
             }
-            Err("URI does not contain 'lno' parameter with BOLT12 offer".to_string())
+            Err(OfferError::ResolveUriError(
+                "URI does not contain 'lno' parameter with BOLT12 offer".to_string(),
+            ))
         } else {
-            Err("Invalid URI format - expected bitcoin:?lno=<offer>".to_string())
+            Err(OfferError::ResolveUriError(format!(
+                "Invalid URI format - expected bitcoin:?lno=<offer>, got: {}",
+                uri
+            )))
         }
     }
 
-    pub async fn resolve_locally(
-        &self,
-        name: String,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let client = reqwest::Client::new();
-        let resolver = HTTPHrnResolver::with_client(client);
+    pub async fn resolve_locally(&self, name: String) -> Result<String, OfferError> {
+        let hrn_parsed = HumanReadableName::from_encoded(&name)
+            .map_err(|_| OfferError::ParseHrnFailure(name.clone()))?;
 
-        let hrn_parsed = HumanReadableName::from_encoded(&name).map_err(|_| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("invalid human-readable name: {}", name),
-            )) as Box<dyn std::error::Error + Send + Sync>
-        })?;
-
-        let resolution = resolver.resolve_hrn(&hrn_parsed).await.map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("HRN resolution failed for {}: {}", name, e),
-            )) as Box<dyn std::error::Error + Send + Sync>
-        })?;
+        let resolution = self
+            .resolver
+            .resolve_hrn(&hrn_parsed)
+            .await
+            .map_err(|e| OfferError::HrnResolutionFailure(format!("{}: {}", name, e)))?;
 
         let uri = match resolution {
             HrnResolution::DNSSEC { result, .. } => result,
             HrnResolution::LNURLPay { .. } => {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "LNURL resolution not supported in this flow",
+                return Err(OfferError::ResolveUriError(
+                    "LNURL resolution not supported in this flow".to_string(),
                 ))
-                    as Box<dyn std::error::Error + Send + Sync>)
             }
         };
 

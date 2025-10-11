@@ -11,7 +11,6 @@ mod internal {
 
 use home::home_dir;
 use internal::*;
-use lndk::dns_resolver::LndkDNSResolverMessageHandler;
 use lndk::lnd::{build_seed_from_lnd_node, get_lnd_client, validate_lnd_creds, LndCfg};
 use lndk::offers::handler::OfferHandler;
 use lndk::server::LNDKServer;
@@ -223,10 +222,6 @@ async fn main() -> Result<(), ()> {
         Some(seed),
         Some(client.clone()),
     ));
-    let latest_block_height: u32 = info.block_height as u32;
-    let latest_block_time: u32 =
-        (info.best_header_timestamp as i64).clamp(0, u32::MAX as i64) as u32;
-    let dns_resolver = LndkDNSResolverMessageHandler::new(latest_block_time, latest_block_height);
     let messenger = LndkOnionMessenger::new();
 
     let server = LNDKServer::new(
@@ -234,7 +229,6 @@ async fn main() -> Result<(), ()> {
         &info.identity_pubkey,
         lnd_tls_str,
         address,
-        dns_resolver,
     )
     .await;
 

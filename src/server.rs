@@ -37,7 +37,6 @@ pub struct LNDKServer {
     // The LND tls cert we need to establish a connection with LND.
     lnd_cert: String,
     address: String,
-    dns_resolver: LndkDNSResolverMessageHandler,
 }
 
 impl LNDKServer {
@@ -46,14 +45,12 @@ impl LNDKServer {
         node_id: &str,
         lnd_cert: String,
         address: String,
-        dns_resolver: LndkDNSResolverMessageHandler,
     ) -> Self {
         Self {
             offer_handler,
             node_id: PublicKey::from_str(node_id).unwrap(),
             lnd_cert,
             address,
-            dns_resolver,
         }
     }
 }
@@ -79,13 +76,9 @@ impl Offers for LNDKServer {
 
         let offer_str = if let Some(name_str) = &inner_request.name {
             if !name_str.is_empty() {
-                self.dns_resolver
+                LndkDNSResolverMessageHandler::new()
                     .resolve_name_to_offer(name_str)
-                    .await
-                    .map_err(|e| {
-                        log::error!("DNS resolution failed: {}", e);
-                        Status::internal(format!("DNS resolution failed: {}", e))
-                    })?
+                    .await?
             } else {
                 inner_request.offer.clone()
             }
