@@ -40,7 +40,7 @@ impl LndkDNSResolverMessageHandler {
         }
     }
 
-    pub async fn resolve_name_to_offer(&self, name_str: &str) -> Result<String, OfferError> {
+    pub async fn resolver_hrn_to_offer(&self, name_str: &str) -> Result<String, OfferError> {
         let resolved_uri = self.resolve_locally(name_str.to_string()).await?;
         self.extract_offer_from_uri(&resolved_uri)
     }

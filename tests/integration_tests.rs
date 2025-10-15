@@ -1496,11 +1496,8 @@ impl bitcoin_payment_instructions::hrn_resolution::HrnResolver for MockHrnResolv
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_pay_offer_with_name_and_dns() {
-    use lndk::lndkrpc::offers_client::OffersClient;
-    use lndk::lndkrpc::offers_server::OffersServer;
-    use lndk::lndkrpc::PayOfferRequest;
+    use lndk::offers::handler::PayHumanReadableAddressParams;
     use std::time::{Duration, SystemTime};
-    use tonic::transport::{Identity, Server, ServerTlsConfig};
 
     let test_name = "lndk_pay_offer_with_name";
     let (bitcoind, mut lnd, ldk1, ldk2, lndk_dir, _) =
@@ -1533,7 +1530,7 @@ async fn test_pay_offer_with_name_and_dns() {
 
     let dns_resolver = lndk::dns_resolver::LndkDNSResolverMessageHandler::new();
     let resolved_offer = dns_resolver
-        .resolve_name_to_offer(human_readable_name)
+        .resolver_hrn_to_offer(human_readable_name)
         .await;
     assert!(
         resolved_offer.is_ok(),
@@ -1546,118 +1543,33 @@ async fn test_pay_offer_with_name_and_dns() {
         &lnd.cert_path,
         &lnd.macaroon_path,
         lnd.address.clone(),
-        lndk_dir.clone(),
+        lndk_dir,
     )
     .await;
 
-    let mut lnd_client = lnd.client.clone().unwrap();
-    let info = lnd_client
-        .lightning()
-        .get_info(tonic_lnd::lnrpc::GetInfoRequest {})
-        .await
-        .expect("failed to get info")
-        .into_inner();
+    let client = lnd.client.clone().unwrap();
 
-    let server_addr = format!(
-        "{}:{}",
-        lndk::DEFAULT_SERVER_HOST,
-        lndk::DEFAULT_SERVER_PORT
-    );
-    let server_socket_addr: SocketAddr = server_addr.parse().unwrap();
-
-    let lnd_cert_path = PathBuf::from(&lnd.cert_path);
-    let lnd_cert = std::fs::read_to_string(lnd_cert_path).unwrap();
-
-    let lndk_server = lndk::server::LNDKServer::new(
-        handler.clone(),
-        &info.identity_pubkey,
-        lnd_cert.clone(),
-        lnd.address.clone(),
-    )
-    .await;
-
-    let tls_cert_path = lndk_dir.join(lndk::TLS_CERT_FILENAME);
-    let tls_key_path = lndk_dir.join(lndk::TLS_KEY_FILENAME);
-
-    if !tls_cert_path.exists() || !tls_key_path.exists() {
-        use rcgen::generate_simple_self_signed;
-        let cert_key = generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("failed to generate certificate");
-        std::fs::write(
-            &tls_key_path,
-            cert_key.signing_key.serialize_pem().as_bytes(),
-        )
-        .expect("failed to write key");
-        std::fs::write(&tls_cert_path, cert_key.cert.pem()).expect("failed to write cert");
-    }
-
-    let tls_cert = std::fs::read_to_string(tls_cert_path.clone()).unwrap();
-    let tls_key = std::fs::read_to_string(tls_key_path).unwrap();
-    let identity = Identity::from_pem(tls_cert.clone(), tls_key);
-
-    let (server_shutdown, server_listener) = triggered::trigger();
-    let server_handle = tokio::spawn(async move {
-        Server::builder()
-            .tls_config(ServerTlsConfig::new().identity(identity))
-            .expect("couldn't configure tls")
-            .add_service(OffersServer::new(lndk_server))
-            .serve_with_shutdown(server_socket_addr, server_listener)
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let pay_cfg = PayHumanReadableAddressParams {
+        name: human_readable_name.to_string(),
+        amount: Some(20_000),
+        payer_note: None,
+        network: Network::Regtest,
+        client: client.clone(),
+        reply_path: None,
+        response_invoice_timeout: None,
+        fee_limit: None,
+    };
 
     select! {
         val = messenger.run(lndk_cfg, Arc::clone(&handler)) => {
             panic!("messenger should not complete first {:?}", val);
         },
-        result = async {
-            let lndk_cert_pem = std::fs::read_to_string(tls_cert_path).unwrap();
-            let macaroon_bytes = std::fs::read(&lnd.macaroon_path).unwrap();
-            let macaroon_hex = hex::encode(macaroon_bytes);
+        res = handler.pay_hrn(pay_cfg) => {
+            assert!(res.is_ok(), "pay_hrn failed: {:?}", res.err());
+            let payment = res.unwrap();
+            assert!(!payment.payment_preimage.is_empty(), "Payment should have a preimage");
 
-            let cert = tonic::transport::Certificate::from_pem(lndk_cert_pem.as_bytes());
-            let tls_config = tonic::transport::ClientTlsConfig::new()
-                .ca_certificate(cert)
-                .domain_name("localhost");
-
-            let channel = tonic::transport::Channel::from_shared(format!("https://{}", server_addr))
-                .unwrap()
-                .tls_config(tls_config)
-                .unwrap()
-                .connect()
-                .await
-                .expect("failed to connect to lndk server");
-
-            let mut client = OffersClient::new(channel);
-
-            let mut request = tonic::Request::new(PayOfferRequest {
-                offer: String::new(),
-                amount: Some(20_000),
-                payer_note: None,
-                response_invoice_timeout: None,
-                fee_limit: None,
-                fee_limit_percent: None,
-                name: Some(human_readable_name.to_string()),
-            });
-
-            request.metadata_mut().insert(
-                "macaroon",
-                macaroon_hex.parse().expect("failed to parse macaroon"),
-            );
-
-            let result = client.pay_offer(request).await;
-            assert!(result.is_ok(), "pay_offer failed: {:?}", result.err());
-
-            let response = result.as_ref().unwrap().get_ref();
-            assert!(!response.payment_preimage.is_empty(), "Payment should have a preimage");
-            result
-        } => {
-            assert!(result.is_ok());
-
-            server_shutdown.trigger();
             shutdown.trigger();
-            let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
             ldk1.stop().await;
             ldk2.stop().await;
 
