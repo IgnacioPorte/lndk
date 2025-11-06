@@ -2,6 +2,10 @@ use crate::OfferError;
 use bitcoin_payment_instructions::hrn_resolution::{HrnResolution, HrnResolver, HumanReadableName};
 use bitcoin_payment_instructions::http_resolver::HTTPHrnResolver;
 use std::sync::Arc;
+use std::time::Duration;
+use url::Url;
+
+const DEFAULT_DNS_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Clone)]
 pub struct LndkDNSResolverMessageHandler {
@@ -16,7 +20,12 @@ impl Default for LndkDNSResolverMessageHandler {
 
 impl LndkDNSResolverMessageHandler {
     pub fn new() -> Self {
-        Self::with_resolver(HTTPHrnResolver::new())
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_DNS_TIMEOUT_SECS))
+            .build()
+            .expect("Failed to build HTTP client for DNS resolution");
+
+        Self::with_resolver(HTTPHrnResolver::with_client(client))
     }
 
     pub fn with_resolver<R: HrnResolver + Send + Sync + 'static>(resolver: R) -> Self {
@@ -31,23 +40,18 @@ impl LndkDNSResolverMessageHandler {
     }
 
     pub fn extract_offer_from_uri(&self, uri: &str) -> Result<String, OfferError> {
-        if let Some((_scheme, params)) = uri.split_once("?") {
-            for param in params.split("&") {
-                if let Some((key, value)) = param.split_once("=") {
-                    if key.eq_ignore_ascii_case("lno") {
-                        return Ok(value.to_string());
-                    }
-                }
+        let url = Url::parse(uri)
+            .map_err(|_| OfferError::ResolveUriError("Invalid URI format".to_string()))?;
+
+        for (key, value) in url.query_pairs() {
+            if key.eq_ignore_ascii_case("lno") {
+                return Ok(value.into_owned());
             }
-            Err(OfferError::ResolveUriError(
-                "URI does not contain 'lno' parameter with BOLT12 offer".to_string(),
-            ))
-        } else {
-            Err(OfferError::ResolveUriError(format!(
-                "Invalid URI format - expected bitcoin:?lno=<offer>, got: {}",
-                uri
-            )))
         }
+
+        Err(OfferError::ResolveUriError(
+            "URI does not contain 'lno' parameter with BOLT12 offer".to_string(),
+        ))
     }
 
     pub async fn resolve_locally(&self, name: String) -> Result<String, OfferError> {
@@ -70,5 +74,38 @@ impl LndkDNSResolverMessageHandler {
         };
 
         Ok(uri)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_offer_from_simple_uri() {
+        let handler = LndkDNSResolverMessageHandler::new();
+        let uri = "bitcoin:?lno=lno1qgsqvgnwgcg35z";
+        let result = handler.extract_offer_from_uri(uri);
+        assert_eq!(result.unwrap(), "lno1qgsqvgnwgcg35z");
+    }
+
+    #[test]
+    fn test_extract_offer_with_percent_encoding() {
+        let handler = LndkDNSResolverMessageHandler::new();
+        let uri = "bitcoin:?lno=lno1%20test%3Dvalue";
+        let result = handler.extract_offer_from_uri(uri);
+        assert_eq!(result.unwrap(), "lno1 test=value");
+    }
+
+    #[test]
+    fn test_extract_offer_missing_param() {
+        let handler = LndkDNSResolverMessageHandler::new();
+        let uri = "bitcoin:?amount=50&label=test";
+        let result = handler.extract_offer_from_uri(uri);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not contain 'lno' parameter"));
     }
 }
