@@ -1445,22 +1445,6 @@ struct MockHrnResolver {
     response_uri: String,
 }
 
-fn set_test_dns_resolver<
-    R: bitcoin_payment_instructions::hrn_resolution::HrnResolver + Send + Sync + 'static,
->(
-    resolver: R,
-) {
-    if let Ok(mut guard) = lndk::dns_resolver::TEST_RESOLVER.write() {
-        *guard = Some(std::sync::Arc::new(resolver));
-    }
-}
-
-fn clear_test_dns_resolver() {
-    if let Ok(mut guard) = lndk::dns_resolver::TEST_RESOLVER.write() {
-        *guard = None;
-    }
-}
-
 impl bitcoin_payment_instructions::hrn_resolution::HrnResolver for MockHrnResolver {
     fn resolve_hrn<'a>(
         &'a self,
@@ -1526,9 +1510,9 @@ async fn test_pay_offer_with_name_and_dns() {
         response_uri: format!("bitcoin:?lno={}", offer_string),
     };
 
-    set_test_dns_resolver(mock_resolver);
+    let dns_resolver =
+        lndk::dns_resolver::LndkDNSResolverMessageHandler::with_resolver(mock_resolver);
 
-    let dns_resolver = lndk::dns_resolver::LndkDNSResolverMessageHandler::new();
     let resolved_offer = dns_resolver
         .resolver_hrn_to_offer(human_readable_name)
         .await;
@@ -1539,7 +1523,14 @@ async fn test_pay_offer_with_name_and_dns() {
     );
     assert_eq!(resolved_offer.unwrap(), offer_string);
 
-    let (lndk_cfg, handler, messenger, shutdown) = common::setup_lndk(
+    let handler = Arc::new(lndk::offers::handler::OfferHandler::with_dns_resolver(
+        None,
+        None,
+        None,
+        dns_resolver.clone(),
+    ));
+
+    let (lndk_cfg, _, messenger, shutdown) = common::setup_lndk(
         &lnd.cert_path,
         &lnd.macaroon_path,
         lnd.address.clone(),
@@ -1572,8 +1563,6 @@ async fn test_pay_offer_with_name_and_dns() {
             shutdown.trigger();
             ldk1.stop().await;
             ldk2.stop().await;
-
-            clear_test_dns_resolver();
         }
     }
 }

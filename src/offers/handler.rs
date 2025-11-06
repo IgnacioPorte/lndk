@@ -59,6 +59,7 @@ pub struct OfferHandler {
     /// an invoice. If not provided, we will use the default value of 15 seconds.
     pub response_invoice_timeout: u32,
     client: Option<Client>,
+    dns_resolver: LndkDNSResolverMessageHandler,
 }
 
 #[derive(Clone)]
@@ -128,6 +129,20 @@ impl OfferHandler {
         seed: Option<[u8; 32]>,
         client: Option<Client>,
     ) -> Self {
+        Self::with_dns_resolver(
+            response_invoice_timeout,
+            seed,
+            client,
+            LndkDNSResolverMessageHandler::new(),
+        )
+    }
+
+    pub fn with_dns_resolver(
+        response_invoice_timeout: Option<u32>,
+        seed: Option<[u8; 32]>,
+        client: Option<Client>,
+        dns_resolver: LndkDNSResolverMessageHandler,
+    ) -> Self {
         let messenger_utils = MessengerUtilities::default();
         let random_bytes = match seed {
             Some(seed) => seed,
@@ -144,6 +159,7 @@ impl OfferHandler {
             expanded_key,
             response_invoice_timeout,
             client,
+            dns_resolver,
         }
     }
 
@@ -166,9 +182,7 @@ impl OfferHandler {
 
     /// Resolves a human-readable name (BIP-353) to an offer and pays it.
     pub async fn pay_hrn(&self, cfg: PayHumanReadableAddressParams) -> Result<Payment, OfferError> {
-        let offer_str = LndkDNSResolverMessageHandler::new()
-            .resolver_hrn_to_offer(&cfg.name)
-            .await?;
+        let offer_str = self.dns_resolver.resolver_hrn_to_offer(&cfg.name).await?;
 
         let offer = decode(offer_str)?;
         let destination = get_destination(&offer).await?;

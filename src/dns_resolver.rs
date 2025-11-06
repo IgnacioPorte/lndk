@@ -3,12 +3,7 @@ use bitcoin_payment_instructions::hrn_resolution::{HrnResolution, HrnResolver, H
 use bitcoin_payment_instructions::http_resolver::HTTPHrnResolver;
 use std::sync::Arc;
 
-#[cfg(itest)]
-use std::sync::RwLock;
-
-#[cfg(itest)]
-pub static TEST_RESOLVER: RwLock<Option<Arc<dyn HrnResolver + Send + Sync>>> = RwLock::new(None);
-
+#[derive(Clone)]
 pub struct LndkDNSResolverMessageHandler {
     resolver: Arc<dyn HrnResolver + Send + Sync>,
 }
@@ -21,16 +16,6 @@ impl Default for LndkDNSResolverMessageHandler {
 
 impl LndkDNSResolverMessageHandler {
     pub fn new() -> Self {
-        #[cfg(itest)]
-        {
-            if let Ok(guard) = TEST_RESOLVER.read() {
-                if let Some(test_resolver) = guard.as_ref() {
-                    return Self {
-                        resolver: Arc::clone(test_resolver),
-                    };
-                }
-            }
-        }
         Self::with_resolver(HTTPHrnResolver::new())
     }
 
